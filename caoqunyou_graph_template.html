@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <script>
+        {{ vis_js_content | safe }}
+    </script>
+    <style>
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            background: linear-gradient(180deg, #FFF8FA 0%, #FFE8EF 100%);
+            overflow: hidden;
+            font-family: "Microsoft YaHei", sans-serif;
+        }
+        #network-container {
+            width: 100%; height: calc(100vh - 80px); position: relative;
+        }
+        .header {
+            width: 100%; height: 80px;
+            display: flex; align-items: center; justify-content: center;
+            color: #FFFFFF; font-size: 28px; font-weight: bold;
+            background: linear-gradient(135deg, #FFB7C5 0%, #E8806A 100%);
+            z-index: 10; position: relative;
+            text-shadow: 2px 2px 0 rgba(0,0,0,0.15);
+            letter-spacing: 3px;
+            box-shadow: 0 3px 0 #FFD6E0;
+        }
+        .header::before { content: '🌸'; position: absolute; left: 20px; font-size: 22px; opacity: 0.5; }
+        .header::after { content: '🌸'; position: absolute; right: 20px; font-size: 22px; opacity: 0.5; }
+    </style>
+</head>
+<body>
+    <div class="header">🔥 群 {{ group_name }} 今日草群友图谱 🔥</div>
+    <div id="network-container"></div>
+
+    <script>
+        const hourlyTag = new Date().toISOString().slice(0, 13);
+        // records: [{attacker_id, attacker_name, target_id, target_name, timestamp}]
+        const raw_data = {{ records | tojson }};
+        const user_map = {{ user_map | tojson }} || {};
+
+        const nodes = [];
+        const edges = [];
+        const userSet = new Set();
+        // 聚合：attacker->target 出现次数
+        const edgeCount = {};
+
+        raw_data.forEach(r => {
+            const aid = r.attacker_id;
+            const tid = r.target_id;
+            const aname = user_map[aid] || r.attacker_name || ("用户" + aid);
+            const tname = user_map[tid] || r.target_name  || ("用户" + tid);
+
+            if (!userSet.has(aid)) {
+                userSet.add(aid);
+                nodes.push({
+                    id: aid, label: aname,
+                    shape: 'circularImage',
+                    image: `https://q4.qlogo.cn/headimg_dl?dst_uin=${aid}&spec=640&t=${hourlyTag}`,
+                    borderWidth: 5, size: 90,
+                    color: { border: '#C85A7C', background: '#FFF0F5' },
+                    font: { color: '#4A3F4B', size: 42, vadjust: 38,
+                            strokeWidth: 5, strokeColor: '#FFFFFF',
+                            bold: { color: '#4A3F4B', size: 42, vadjust: 38 } }
+                });
+            }
+            if (!userSet.has(tid)) {
+                userSet.add(tid);
+                nodes.push({
+                    id: tid, label: tname,
+                    shape: 'circularImage',
+                    image: `https://q4.qlogo.cn/headimg_dl?dst_uin=${tid}&spec=640&t=${hourlyTag}`,
+                    borderWidth: 5, size: 90,
+                    color: { border: '#C85A7C', background: '#FFF0F5' },
+                    font: { color: '#4A3F4B', size: 42, vadjust: 38,
+                            strokeWidth: 5, strokeColor: '#FFFFFF',
+                            bold: { color: '#4A3F4B', size: 42, vadjust: 38 } }
+                });
+            }
+
+            const ekey = aid + '->' + tid;
+            edgeCount[ekey] = (edgeCount[ekey] || 0) + 1;
+        });
+
+        // 生成边（聚合后显示次数）
+        Object.entries(edgeCount).forEach(([ekey, cnt]) => {
+            const [aid, tid] = ekey.split('->');
+            const label = cnt > 1 ? `草了×${cnt}` : "草了";
+            // 双向草时用不同弯曲方向以避免重叠
+            const reverseKey = tid + '->' + aid;
+            const hasMutual  = reverseKey in edgeCount;
+            edges.push({
+                from: aid, to: tid, label: label,
+                arrows: { to: { enabled: true, scaleFactor: 2.5, type: 'arrow' } },
+                color: { color: '#C85A7C', opacity: 0.85 }, width: Math.min(2 + cnt, 8),
+                font: { align: 'middle', color: '#C85A7C', size: 32, background: '#FFF8FA' },
+                smooth: hasMutual
+                    ? { type: 'curvedCW', roundness: 0.3 }
+                    : { type: 'curvedCW', roundness: 0.15 },
+                length: 600
+            });
+        });
+
+        const container = document.getElementById('network-container');
+        const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
+        const options = {
+            nodes: { shape: 'circularImage', font: { face: 'Microsoft YaHei' } },
+            edges: { },
+            physics: {
+                enabled: true,
+                barnesHut: {
+                    gravitationalConstant: -120000, centralGravity: 0.05,
+                    springLength: 650, springConstant: 0.05, damping: 0.1, avoidOverlap: 1
+                },
+                stabilization: { enabled: true, iterations: {{ iterations }},
+                    updateInterval: 25, onlyDynamicEdges: false, fit: true }
+            },
+            layout: { improvedLayout: true }
+        };
+        const network = new vis.Network(container, data, options);
+        network.once("stabilizationIterationsDone", function () { network.fit(); });
+    </script>
+</body>
+</html>

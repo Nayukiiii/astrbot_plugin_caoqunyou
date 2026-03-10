@@ -1,0 +1,6 @@
+name: astrbot_plugin_caoqunyou
+desc: "草群友插件，支持草群友（随机/@指定）、体内液体统计、排行榜、关系图等功能。"
+display_name: 草群友
+version: v1.0.0
+author: Nayuki
+repo: https://github.com/Nayukiiii/astrbot_plugin_caoqunyou

@@ -1,0 +1,115 @@
+{
+    "cao_probability": {
+        "type": "float",
+        "description": "草群友触发概率（%）",
+        "hint": "发送草群友指令后实际触发的概率，取值 0~100。例如填 30 表示 30% 概率触发，填 100 则必定触发。",
+        "default": 30,
+        "slider": { "min": 0, "max": 100, "step": 5 }
+    },
+    "fancao_probability": {
+        "type": "float",
+        "description": "反草基础强度（%）",
+        "hint": "控制群友反草的整体倾向，取值 0~100。\n\n实际反草概率由多个因素动态决定：\n• 逃脱质量：群友差点没跑掉时反草概率大幅提升\n• 累积仇恨：该用户历史草群友次数越多，群友越记仇\n• 今日压力：当天群里被草次数越多，反扑意志越强\n\n填 0 关闭反草；填 50 为默认强度。",
+        "default": 50,
+        "slider": { "min": 0, "max": 100, "step": 5 }
+    },
+    "cao_daily_limit": {
+        "type": "int",
+        "description": "每人每天草群友次数上限",
+        "hint": "每位用户每天最多可以成功草群友的次数（草限定不计入此限制）。",
+        "default": 5,
+        "slider": { "min": 1, "max": 20, "step": 1 }
+    },
+    "reset_daily_attempts": {
+        "type": "int",
+        "description": "每人每天重置尝试次数上限",
+        "hint": "普通用户每天最多可以尝试【重置草群友】的次数。bot管理员不受此限制。",
+        "default": 3,
+        "slider": { "min": 1, "max": 10, "step": 1 }
+    },
+    "allow_self_cao": {
+        "type": "bool",
+        "description": "允许自草",
+        "hint": "是否允许用户草自己（包括草限定时目标恰好是自己）。",
+        "default": false
+    },
+    "whitelist_groups": {
+        "type": "list",
+        "description": "功能白名单群",
+        "hint": "若填写，则插件仅在这些群生效。留空表示全部群均可用。",
+        "default": []
+    },
+    "blacklist_groups": {
+        "type": "list",
+        "description": "功能黑名单群",
+        "hint": "填写后，这些群无法使用插件任何功能。",
+        "default": []
+    },
+    "announce_groups": {
+        "type": "list",
+        "description": "每日限定推送群列表",
+        "hint": "每天12点自动推送今日限定的群。留空时，若设置了功能白名单则推送白名单内的群；否则推送所有曾经活跃过的群。",
+        "default": []
+    },
+    "announce_hour": {
+        "type": "int",
+        "description": "每日限定推送时间（小时）",
+        "hint": "每天几点推送今日限定公告，24小时制，默认12（即中午12点）。",
+        "default": 12,
+        "slider": { "min": 0, "max": 23, "step": 1 }
+    },
+    "announce_minute": {
+        "type": "int",
+        "description": "每日限定推送时间（分钟）",
+        "hint": "推送时间的分钟数，配合【推送时间（小时）】使用，默认0。",
+        "default": 0,
+        "slider": { "min": 0, "max": 59, "step": 1 }
+    },
+    "xd_base_probability": {
+        "type": "float",
+        "description": "草限定基础概率（%）",
+        "hint": "草限定的初始成功概率。每次逃走后按【逃走概率加成】递增，上限由【草限定概率上限】控制。\n留空（填-1）则复用【草群友触发概率】的值。",
+        "default": -1,
+        "slider": { "min": -1, "max": 100, "step": 5 }
+    },
+    "xd_escape_bonus": {
+        "type": "float",
+        "description": "草限定逃走概率加成（%/次）",
+        "hint": "每次草限定失败（逃走）后，下次成功概率额外增加的百分点，默认5。",
+        "default": 5,
+        "slider": { "min": 1, "max": 20, "step": 1 }
+    },
+    "xd_max_probability": {
+        "type": "float",
+        "description": "草限定概率上限（%）",
+        "hint": "草限定成功概率的最高值，无论逃走多少次都不会超过此值，默认95。",
+        "default": 95,
+        "slider": { "min": 50, "max": 100, "step": 5 }
+    },
+    "xd_reset_escapes_on_announce": {
+        "type": "bool",
+        "description": "每日推送时重置逃走计数",
+        "hint": "开启后，每天推送新限定时同步清空所有人的逃走次数（即概率回到基础值）。关闭则逃走次数跨天累积。",
+        "default": true
+    },
+    "auto_withdraw_enabled": {
+        "type": "bool",
+        "description": "定时自动撤回",
+        "hint": "开启后，将在发送结果后延迟撤回消息以防刷屏。当前仅在 aiocqhttp/OneBot 平台可用。",
+        "default": false
+    },
+    "auto_withdraw_delay_seconds": {
+        "type": "int",
+        "description": "自动撤回延迟(秒)",
+        "hint": "自动撤回延迟时间，单位秒。仅在开启【定时自动撤回】时生效。",
+        "default": 5,
+        "slider": { "min": 1, "max": 60, "step": 1 }
+    },
+    "iterations": {
+        "type": "int",
+        "description": "关系图生成迭代次数",
+        "hint": "控制关系图生成的精细度。人数少的话可以调小一点，推荐140。",
+        "default": 140,
+        "slider": { "min": 50, "max": 180, "step": 10 }
+    }
+}
