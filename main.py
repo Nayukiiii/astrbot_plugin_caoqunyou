@@ -172,6 +172,7 @@ from .qy_battle_render import render_qy_battle as _render_qy_battle
 from .outside_rank_render import render_outside_rank as _render_outside_rank
 from .qy_profile_render import render_qy_profile as _render_qy_profile
 from .my_battle_render import render_my_battle as _render_my_battle
+from .graph_render import render_graph as _render_graph
 
 
 def _fmt_ml(ml: float) -> str:
@@ -1450,50 +1451,22 @@ class CaoQunYouPlugin(Star):
         except Exception as e:
             logger.warning(f"获取群信息失败: {e}")
 
-        vis_js_path = os.path.join(self.curr_dir, "vis-network.min.js")
-        vis_js_content = ""
-        if os.path.exists(vis_js_path):
-            with open(vis_js_path, "r", encoding="utf-8") as f:
-                vis_js_content = f.read()
-
-        template_path = os.path.join(self.curr_dir, "caoqunyou_graph_template.html")
-        if not os.path.exists(template_path):
-            yield event.plain_result("错误：找不到模板文件 caoqunyou_graph_template.html")
-            return
-
-        with open(template_path, "r", encoding="utf-8") as f:
-            graph_html = f.read()
-
-        # 统计唯一节点数
-        all_ids = set()
-        for r in group_cao_records:
-            all_ids.add(r.get("attacker_id", ""))
-            all_ids.add(r.get("target_id", ""))
-        node_count = len(all_ids)
-        clip_width  = 1920
-        clip_height = 1080 + max(0, node_count - 10) * 60
-        iter_count  = self.config.get("iterations", 140)
-
+        import tempfile
+        tmp_graph = tempfile.mktemp(suffix=".png")
         try:
-            url = await self.html_render(
-                graph_html,
-                {
-                    "vis_js_content": vis_js_content,
-                    "group_id":       group_id,
-                    "group_name":     group_name,
-                    "user_map":       user_map,
-                    "records":        group_cao_records,
-                    "iterations":     iter_count,
-                },
-                options={
-                    "type": "png", "quality": None, "scale": "device",
-                    "clip": {"x": 0, "y": 0, "width": clip_width, "height": clip_height},
-                    "full_page": False, "device_scale_factor_level": "ultra",
-                },
+            await _render_graph(
+                records=group_cao_records,
+                user_map=user_map,
+                group_name=group_name,
+                out_path=tmp_graph,
+                cache_dir=os.path.join(self.curr_dir, "avatar_cache"),
             )
-            yield event.image_result(url)
+            yield event.image_result(tmp_graph)
         except Exception as e:
             logger.error(f"渲染草群友关系图失败: {e}")
+        finally:
+            if os.path.exists(tmp_graph):
+                os.unlink(tmp_graph)
 
 
     # ============================================================
@@ -1861,10 +1834,24 @@ class CaoQunYouPlugin(Star):
         except Exception:
             pass
 
+        # 获取 bot 自身 QQ 号，用于排除 bot 自己
+        bot_id = ""
+        try:
+            if event.get_platform_name() == "aiocqhttp":
+                assert isinstance(event, AiocqhttpMessageEvent)
+                login_info = await event.bot.api.call_action("get_login_info")
+                if isinstance(login_info, dict):
+                    if "data" in login_info:
+                        login_info = login_info["data"]
+                    bot_id = str(login_info.get("user_id", ""))
+        except Exception:
+            pass
+
         allow_self = bool(self.config.get("allow_self_cao", False))
         candidates = [
             str(m.get("user_id")) for m in members
             if (allow_self or str(m.get("user_id")) != user_id)
+            and str(m.get("user_id")) != bot_id          # 永远排除 bot 自身
         ]
         if not candidates:
             yield event.plain_result("群里没有其他人，草不了~")
