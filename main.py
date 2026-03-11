@@ -21,6 +21,8 @@ CMD_QY_PROFILE        = "我的体内"     # 查看单人体内档案（不@=自
 CMD_CAO_XIAN_DING     = "草限定"       # 草今日限定群友（每逃走一次概率+5%）
 CMD_XIAN_DING_INFO    = "限定"         # 查看今日限定是谁
 CMD_DEBUG             = "草群友调试"    # 临时调试：显示管理员匹配信息
+CMD_CAO_QUAN_QUN      = "草全群"        # 对全群发起草（每天1次独立冷却，静默汇总结果）
+CMD_MY_BATTLE         = "我的战绩"      # 查看自己的攻方战绩档案
 # ============================================================
 
 import json as _json
@@ -169,6 +171,7 @@ from .qy_body_render import render_qy_body as _render_qy_body
 from .qy_battle_render import render_qy_battle as _render_qy_battle
 from .outside_rank_render import render_outside_rank as _render_outside_rank
 from .qy_profile_render import render_qy_profile as _render_qy_profile
+from .my_battle_render import render_my_battle as _render_my_battle
 
 
 def _fmt_ml(ml: float) -> str:
@@ -210,6 +213,14 @@ class CaoQunYouPlugin(Star):
         self.xian_ding_file     = os.path.join(self.data_dir, "xian_ding.json")
         self.xian_ding_data     = load_json(self.xian_ding_file, {})
         # xian_ding_data 结构: {group_id: {"date": "YYYY-MM-DD", "uid": str, "name": str}}
+
+        # 草全群冷却 & 历史记录
+        # cao_quan_qun_cd:  {group_id: {user_id: "YYYY-MM-DD"}}  —— 每人每天1次
+        # cao_quan_qun_log: {group_id: {user_id: [{"ts":float,"success":int,"escaped":int,"fancaoed":int}, ...]}}
+        self.cao_quan_qun_cd_file  = os.path.join(self.data_dir, "cao_quan_qun_cd.json")
+        self.cao_quan_qun_log_file = os.path.join(self.data_dir, "cao_quan_qun_log.json")
+        self.cao_quan_qun_cd       = load_json(self.cao_quan_qun_cd_file,  {})
+        self.cao_quan_qun_log      = load_json(self.cao_quan_qun_log_file, {})
 
         # 限定草 逃走次数累计（当天内存，重启清零） {group_id: {user_id: escape_count}}
         self._xd_escapes: dict[str, dict[str, int]] = {}
@@ -1803,16 +1814,282 @@ class CaoQunYouPlugin(Star):
             yield event.plain_result(text)
 
     # ============================================================
+    # /草全群
+    # ============================================================
+
+    @filter.command(CMD_CAO_QUAN_QUN)
+    async def cao_quan_qun(self, event: AstrMessageEvent):
+        async for result in self._cmd_cao_quan_qun(event):
+            yield result
+
+    async def _cmd_cao_quan_qun(self, event: AstrMessageEvent):
+        if event.is_private_chat():
+            yield event.plain_result("此功能仅在群聊中可用哦~")
+            return
+
+        group_id = str(event.get_group_id())
+        if not is_allowed_group(group_id, self.config):
+            return
+
+        user_id   = str(event.get_sender_id())
+        user_name = event.get_sender_name() or f"用户({user_id})"
+
+        # ── 每日冷却检查 ────────────────────────────────────────
+        today = datetime.now().strftime("%Y-%m-%d")
+        gcd   = self.cao_quan_qun_cd.get(group_id, {})
+        if gcd.get(user_id) == today:
+            yield event.plain_result("你今天已经草过全群了，群友们需要休息，明天再来吧~")
+            return
+
+        # ── 拉群成员列表 ────────────────────────────────────────
+        members    = []
+        member_map = {}
+        try:
+            if event.get_platform_name() == "aiocqhttp":
+                assert isinstance(event, AiocqhttpMessageEvent)
+                raw = await event.bot.api.call_action(
+                    "get_group_member_list", group_id=int(group_id)
+                )
+                if isinstance(raw, dict) and "data" in raw:
+                    raw = raw["data"]
+                if isinstance(raw, list):
+                    members = raw
+                    for m in members:
+                        uid = str(m.get("user_id"))
+                        member_map[uid] = m.get("card") or m.get("nickname") or uid
+                    user_name = member_map.get(user_id, user_name)
+        except Exception:
+            pass
+
+        allow_self = bool(self.config.get("allow_self_cao", False))
+        candidates = [
+            str(m.get("user_id")) for m in members
+            if (allow_self or str(m.get("user_id")) != user_id)
+        ]
+        if not candidates:
+            yield event.plain_result("群里没有其他人，草不了~")
+            return
+
+        # ── 标记冷却 ────────────────────────────────────────────
+        if group_id not in self.cao_quan_qun_cd:
+            self.cao_quan_qun_cd[group_id] = {}
+        self.cao_quan_qun_cd[group_id][user_id] = today
+        save_json(self.cao_quan_qun_cd_file, self.cao_quan_qun_cd)
+
+        # ── 逐一判定 ────────────────────────────────────────────
+        cao_prob    = float(self.config.get("cao_probability", 30))
+        cao_prob    = max(0.0, min(100.0, cao_prob))
+        fancao_base = float(self.config.get("fancao_probability", 50))
+        fancao_base = max(0.0, min(100.0, fancao_base))
+
+        success_count  = 0
+        escaped_count  = 0
+        fancaoed_count = 0
+
+        for target_id in candidates:
+            target_name = member_map.get(target_id, f"用户({target_id})")
+
+            if _secrets_roll() >= cao_prob / 100.0:
+                # 逃走或反草
+                if fancao_base > 0:
+                    fake_pct       = secrets.randbelow(99) + 1
+                    times_today    = len(self._get_cao_group_records(group_id))
+                    user_30d_count = len(self.cao_stats.get(group_id, {}).get(user_id, []))
+                    p_fancao       = _calc_fancao_prob(fake_pct, times_today, user_30d_count, fancao_base)
+                    if _secrets_roll() < p_fancao:
+                        # 反草：默认里面，静默处理
+                        grudge = min(1.0, user_30d_count / 15.0)
+                        ml     = _roll_injection_ml(fake_pct=fake_pct, grudge=grudge)
+                        self._record_qy_body(group_id, user_id, ml)
+                        self._record_qy_battle_attacker(group_id, target_id, ml)
+                        self._record_qy_battle_victim(group_id, user_id, ml, attacker_id=target_id)
+                        fancaoed_count += 1
+                        continue
+                escaped_count += 1
+            else:
+                # 草成功：默认里面，静默处理
+                ml = _roll_injection_ml(fake_pct=None, grudge=0.0)
+                self._record_qy_body(group_id, target_id, ml)
+                self._record_qy_battle_attacker(group_id, user_id, ml)
+                self._record_qy_battle_victim(group_id, target_id, ml, attacker_id=user_id)
+
+                # 也记录到 cao_stats / cao_records（不扣每日次数）
+                if group_id not in self.cao_stats:
+                    self.cao_stats[group_id] = {}
+                if user_id not in self.cao_stats[group_id]:
+                    self.cao_stats[group_id][user_id] = []
+                self.cao_stats[group_id][user_id].append(time.time())
+                group_cao_records = self._get_cao_group_records(group_id)
+                group_cao_records.append({
+                    "attacker_id":   user_id,
+                    "attacker_name": user_name,
+                    "target_id":     target_id,
+                    "target_name":   target_name,
+                    "timestamp":     datetime.now().isoformat(),
+                })
+                success_count += 1
+
+        self._clean_cao_stats()
+        save_json(self.cao_stats_file,  self.cao_stats)
+        save_json(self.cao_records_file, self.cao_records)
+
+        # ── 记录草全群日志（供「我的战绩」查询） ───────────────
+        if group_id not in self.cao_quan_qun_log:
+            self.cao_quan_qun_log[group_id] = {}
+        if user_id not in self.cao_quan_qun_log[group_id]:
+            self.cao_quan_qun_log[group_id][user_id] = []
+        self.cao_quan_qun_log[group_id][user_id].append({
+            "ts":       time.time(),
+            "success":  success_count,
+            "escaped":  escaped_count,
+            "fancaoed": fancaoed_count,
+        })
+        # 只保留近30天
+        cutoff = time.time() - 86400 * 30
+        self.cao_quan_qun_log[group_id][user_id] = [
+            r for r in self.cao_quan_qun_log[group_id][user_id]
+            if r["ts"] >= cutoff
+        ]
+        save_json(self.cao_quan_qun_log_file, self.cao_quan_qun_log)
+
+        # ── 汇总文本 ────────────────────────────────────────────
+        total = len(candidates)
+        lines = [f"【{user_name}】对全群 {total} 人发起了草群行动！"]
+        lines.append(f"✅ 成功草了 {success_count} 人")
+        lines.append(f"🏃 {escaped_count} 人逃走了")
+        if fancaoed_count:
+            lines.append(f"⚔️ 被 {fancaoed_count} 人反草了！")
+        yield event.plain_result("\n".join(lines))
+
+    # ============================================================
+    # /我的战绩
+    # ============================================================
+
+    @filter.command(CMD_MY_BATTLE)
+    async def my_battle(self, event: AstrMessageEvent):
+        async for result in self._cmd_my_battle(event):
+            yield result
+
+    async def _cmd_my_battle(self, event: AstrMessageEvent):
+        if event.is_private_chat():
+            yield event.plain_result("此功能仅在群聊中可用哦~")
+            return
+
+        group_id = str(event.get_group_id())
+        if not is_allowed_group(group_id, self.config):
+            return
+
+        sender_id = str(event.get_sender_id())
+        # 支持 @ 查别人战绩
+        target_id = sender_id
+        for seg in event.get_messages():
+            if hasattr(seg, "qq"):
+                t = str(seg.qq)
+                if t != sender_id:
+                    target_id = t
+                    break
+
+        # 拉群成员
+        user_map = {}
+        try:
+            if event.get_platform_name() == "aiocqhttp":
+                assert isinstance(event, AiocqhttpMessageEvent)
+                members = await event.bot.api.call_action(
+                    "get_group_member_list", group_id=int(group_id)
+                )
+                if isinstance(members, dict) and "data" in members:
+                    members = members["data"]
+                for m in members:
+                    uid = str(m.get("user_id"))
+                    user_map[uid] = m.get("card") or m.get("nickname") or uid
+        except Exception:
+            pass
+
+        target_name = user_map.get(target_id, f"用户({target_id})")
+
+        # ── 近30天攻方记录 ──────────────────────────────────────
+        self._clean_qy_battle()
+        attacker_records = (
+            self.qy_battle_data
+            .get(group_id, {})
+            .get("attackers", {})
+            .get(target_id, {})
+            .get("records", [])
+        )
+
+        # ── 被反草次数（作为victim，attacker != self） ──────────
+        # 取 victim 记录中 attacker_id != target_id 的数量（即被他人草）
+        victim_records_all = (
+            self.qy_battle_data
+            .get(group_id, {})
+            .get("victims", {})
+            .get(target_id, {})
+            .get("records", [])
+        )
+        # 反草：在攻方视角下，我作为victim
+        fancao_count = len(victim_records_all)
+
+        # ── 草全群次数（近30天） ────────────────────────────────
+        cutoff = time.time() - 86400 * 30
+        cqq_logs = self.cao_quan_qun_log.get(group_id, {}).get(target_id, [])
+        caoquanqun_count = sum(1 for r in cqq_logs if r.get("ts", 0) >= cutoff)
+
+        # ── 打倒最多的目标 Top3 ─────────────────────────────────
+        # attacker 记录只存 {ts, ml}，没有 victim_id；
+        # 需要从 victims 侧反查：遍历所有 victim，找 attacker_id == target_id 的记录
+        victim_agg: dict[str, dict] = {}
+        all_victims = self.qy_battle_data.get(group_id, {}).get("victims", {})
+        for vid, vdata in all_victims.items():
+            for r in vdata.get("records", []):
+                if r.get("attacker_id", "") == target_id:
+                    if vid not in victim_agg:
+                        victim_agg[vid] = {
+                            "uid":      vid,
+                            "name":     user_map.get(vid, f"用户({vid})"),
+                            "count":    0,
+                            "total_ml": 0.0,
+                        }
+                    victim_agg[vid]["count"]    += 1
+                    victim_agg[vid]["total_ml"] = round(
+                        victim_agg[vid]["total_ml"] + r.get("ml", 0.0), 1
+                    )
+
+        top_victims = sorted(victim_agg.values(), key=lambda x: x["count"], reverse=True)[:3]
+
+        import tempfile
+        tmp_path = tempfile.mktemp(suffix=".png")
+        try:
+            await _render_my_battle(
+                user_qq=target_id,
+                user_name=target_name,
+                attacker_records=attacker_records,
+                fancao_count=fancao_count,
+                caoquanqun_count=caoquanqun_count,
+                top_victims=top_victims,
+                out_path=tmp_path,
+                cache_dir=os.path.join(self.curr_dir, "avatar_cache"),
+                titles_path=os.path.join(self.curr_dir, "qy_battle_titles.json"),
+            )
+            yield event.image_result(tmp_path)
+        except Exception as e:
+            logger.error(f"渲染我的战绩失败: {e}")
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    # ============================================================
     # 插件卸载清理
     # ============================================================
 
     async def terminate(self):
-        save_json(self.cao_stats_file,     self.cao_stats)
-        save_json(self.cao_records_file,   self.cao_records)
-        save_json(self.cao_daily_file,     self.cao_daily)
-        save_json(self.qy_body_file,       self.qy_body_data)
-        save_json(self.qy_battle_file,     self.qy_battle_data)
-        save_json(self.outside_stats_file, self.outside_stats_data)
+        save_json(self.cao_stats_file,       self.cao_stats)
+        save_json(self.cao_records_file,     self.cao_records)
+        save_json(self.cao_daily_file,       self.cao_daily)
+        save_json(self.qy_body_file,         self.qy_body_data)
+        save_json(self.qy_battle_file,       self.qy_battle_data)
+        save_json(self.outside_stats_file,   self.outside_stats_data)
+        save_json(self.cao_quan_qun_cd_file,  self.cao_quan_qun_cd)
+        save_json(self.cao_quan_qun_log_file, self.cao_quan_qun_log)
 
         if self._daily_announce_task and not self._daily_announce_task.done():
             self._daily_announce_task.cancel()
