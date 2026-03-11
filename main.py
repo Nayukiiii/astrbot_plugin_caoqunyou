@@ -17,6 +17,7 @@ CMD_QY_BATTLE         = "群友战绩"     # 群友互草战绩排行
 CMD_OUTSIDE_RANK      = "杂鱼排行"     # 选外面的杂鱼排行
 CMD_QY_BODY           = "群友体内"     # 群友体内液体查询
 CMD_RESET_CAOQUNYOU   = "重置草群友"   # 重置今日草群友次数
+CMD_RESET_CQQ         = "重置草全群"   # 重置今日草全群冷却
 CMD_QY_PROFILE        = "我的体内"     # 查看单人体内档案（不@=自己，@=指定人）
 CMD_CAO_XIAN_DING     = "草限定"       # 草今日限定群友（每逃走一次概率+5%）
 CMD_XIAN_DING_INFO    = "限定"         # 查看今日限定是谁
@@ -1239,6 +1240,74 @@ class CaoQunYouPlugin(Star):
                 os.unlink(tmp_path)
 
     # ============================================================
+    # /重置草全群
+    # ============================================================
+
+    @filter.command(CMD_RESET_CQQ)
+    async def reset_cao_quan_qun(self, event: AstrMessageEvent):
+        async for result in self._cmd_reset_cao_quan_qun(event):
+            yield result
+
+    async def _cmd_reset_cao_quan_qun(self, event: AstrMessageEvent):
+        if event.is_private_chat():
+            yield event.plain_result("此功能仅在群聊中可用哦~")
+            return
+
+        group_id = str(event.get_group_id())
+        if not is_allowed_group(group_id, self.config):
+            return
+
+        user_id  = str(event.get_sender_id())
+        is_admin = self._is_admin(event)
+
+        # 解析参数：@某人 或 全员
+        raw      = event.message_str.strip().removeprefix(CMD_RESET_CQQ).strip()
+        reset_all = raw == "全员"
+        at_target: str | None = None
+        if not reset_all:
+            for seg in event.get_messages():
+                if hasattr(seg, "qq") and str(seg.qq) != user_id:
+                    at_target = str(seg.qq)
+                    break
+
+        if is_admin:
+            if reset_all:
+                self.cao_quan_qun_cd[group_id] = {}
+                save_json(self.cao_quan_qun_cd_file, self.cao_quan_qun_cd)
+                yield event.plain_result("已重置本群所有人今日草全群冷却~")
+                return
+            target_id = at_target or user_id
+            if group_id in self.cao_quan_qun_cd:
+                self.cao_quan_qun_cd[group_id].pop(target_id, None)
+            save_json(self.cao_quan_qun_cd_file, self.cao_quan_qun_cd)
+            if target_id == user_id:
+                yield event.plain_result("已重置你今日草全群的冷却~")
+            else:
+                yield event.plain_result(f"已重置 {target_id} 今日草全群的冷却~")
+            return
+
+        # 普通用户：只能重置自己，且不能@他人/全员
+        if at_target or reset_all:
+            yield event.plain_result("你没有权限重置他人的草全群冷却哦~")
+            return
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        if self.cao_quan_qun_cd.get(group_id, {}).get(user_id) != today:
+            yield event.plain_result("你今天还没有使用过草全群，不需要重置~")
+            return
+
+        # 普通用户掷骰，概率同草群友
+        cao_prob = float(self.config.get("cao_probability", 30))
+        cao_prob = max(0.0, min(100.0, cao_prob))
+        if _secrets_roll() < cao_prob / 100.0:
+            if group_id in self.cao_quan_qun_cd:
+                self.cao_quan_qun_cd[group_id].pop(user_id, None)
+            save_json(self.cao_quan_qun_cd_file, self.cao_quan_qun_cd)
+            yield event.plain_result("重置成功！今日草全群冷却已清零，可以再草一次了~")
+        else:
+            yield event.plain_result("重置失败，群友们不答应再被草一遍~")
+
+    # ============================================================
     # /重置草群友
     # ============================================================
 
@@ -1890,6 +1959,15 @@ class CaoQunYouPlugin(Star):
                         self._record_qy_body(group_id, user_id, ml)
                         self._record_qy_battle_attacker(group_id, target_id, ml)
                         self._record_qy_battle_victim(group_id, user_id, ml, attacker_id=target_id)
+                        # 反草也写入 cao_records，关系图才能显示反向箭头
+                        group_cao_records = self._get_cao_group_records(group_id)
+                        group_cao_records.append({
+                            "attacker_id":   target_id,
+                            "attacker_name": target_name,
+                            "target_id":     user_id,
+                            "target_name":   user_name,
+                            "timestamp":     datetime.now().isoformat(),
+                        })
                         fancaoed_count += 1
                         continue
                 escaped_count += 1
